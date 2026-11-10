@@ -17,11 +17,17 @@
  * Command line: -play starts with the saved choice without the window,
  * -2k forces 2560x1440, -fullscreen forces full screen. Holding Shift while
  * starting shows the window even when "don't ask again" was ticked.
+ *
+ * For RecompLauncher (recomplauncher.json), only used when passed:
+ *   --game <folder>   the extracted game folder, anywhere (instead of [paths] game=)
+ *   --prepare         runs BUILD.bat on that folder with no window and passes its
+ *                     "progress 0.4 Text" lines through on stdout
  */
 #define WIN32_LEAN_AND_MEAN
 #define UNICODE
 #define _UNICODE
 #include <windows.h>
+#include <stdlib.h>
 #include <wchar.h>
 
 #define MAXP 1024
@@ -46,6 +52,15 @@ static int exists(const wchar_t* p) {
 
 static void join(wchar_t* out, const wchar_t* a, const wchar_t* b) {
     swprintf(out, MAXP, L"%ls\\%ls", a, b);
+}
+
+static int is_absolute(const wchar_t* p) {
+    return (p[0] && p[1] == L':') || (p[0] == L'\\' && p[1] == L'\\');
+}
+
+static void strip_trailing_slashes(wchar_t* p) {
+    size_t n = wcslen(p);
+    while (n > 3 && (p[n - 1] == L'\\' || p[n - 1] == L'/')) p[--n] = 0;
 }
 
 static int fail(const wchar_t* msg, const wchar_t* path) {
@@ -160,10 +175,61 @@ static int show_settings(HINSTANCE inst) {
     return g_play;
 }
 
+/* ---- RecompLauncher setup step (--prepare) --------------------------------- */
+
+/* Runs BUILD.bat next to this launcher on the game folder, without a window.
+ * Its output (with tj_build_all.ps1's "progress" lines) goes to our stdout,
+ * which RecompLauncher reads. Returns BUILD.bat's exit code. */
+static int prepare(const wchar_t* game) {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    wchar_t bat[MAXP];
+    join(bat, g_base, L"BUILD.bat");
+    if (!exists(bat)) {
+        static const char msg[] = "progress 0 BUILD.bat is missing next to TokyoJungle.exe\n";
+        DWORD n;
+        if (out && out != INVALID_HANDLE_VALUE) WriteFile(out, msg, sizeof msg - 1, &n, NULL);
+        return 2;
+    }
+
+    wchar_t g[MAXP] = L"";
+    if (game) {
+        wcsncpy(g, game, MAXP - 1);
+        g[MAXP - 1] = 0;
+        strip_trailing_slashes(g);  /* "C:\x\" would end the quoted argument early */
+    }
+    wchar_t cmd[3 * MAXP];
+    swprintf(cmd, 3 * MAXP, L"cmd.exe /d /s /c \"\"%ls\" -Progress%ls%ls%ls\"", bat,
+             g[0] ? L" -Game \"" : L"", g, g[0] ? L"\"" : L"");
+
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    HANDLE in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                            OPEN_EXISTING, 0, NULL);
+    if (out && out != INVALID_HANDLE_VALUE) SetHandleInformation(out, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    if (err && err != INVALID_HANDLE_VALUE) SetHandleInformation(err, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    STARTUPINFOW si = { sizeof si };
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = in;
+    si.hStdOutput = out;
+    si.hStdError = (err && err != INVALID_HANDLE_VALUE) ? err : out;
+
+    SetEnvironmentVariableW(L"TJ_NO_PAUSE", L"1");  /* BUILD.bat ends without "pause" */
+    PROCESS_INFORMATION pi;
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, g_base, &si, &pi))
+        return 3;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (in != INVALID_HANDLE_VALUE) CloseHandle(in);
+    return (int)code;
+}
+
 /* ---- game start ------------------------------------------------------------ */
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
-    (void)prev; (void)show;
+    (void)prev; (void)show; (void)cmdline;
 
     wchar_t self[MAXP];
     GetModuleFileNameW(NULL, self, MAXP);
@@ -174,10 +240,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     join(g_ini, g_base, L"launcher.ini");
     load_settings();
 
-    const int arg_play = cmdline && wcsstr(cmdline, L"-play") != NULL;
-    const int arg_2k = (cmdline && (wcsstr(cmdline, L"-2k") || wcsstr(cmdline, L"-2K"))) ||
-                       wcsstr(selfname, L"2K") || wcsstr(selfname, L"2k");
-    const int arg_full = cmdline && wcsstr(cmdline, L"-fullscreen") != NULL;
+    /* Arguments one by one, so a --game path can't be read as an option. */
+    int arg_play = 0, arg_2k = 0, arg_full = 0, arg_prepare = 0;
+    const wchar_t* arg_game = NULL;
+    for (int i = 1; i < __argc; i++) {
+        const wchar_t* a = __wargv[i];
+        if (!_wcsicmp(a, L"--game") && i + 1 < __argc) arg_game = __wargv[++i];
+        else if (!_wcsicmp(a, L"--prepare")) arg_prepare = 1;
+        else if (wcsstr(a, L"-play")) arg_play = 1;
+        else if (wcsstr(a, L"-2k") || wcsstr(a, L"-2K")) arg_2k = 1;
+        else if (wcsstr(a, L"-fullscreen")) arg_full = 1;
+    }
+    if (wcsstr(selfname, L"2K") || wcsstr(selfname, L"2k")) arg_2k = 1;
+    if (arg_prepare) return prepare(arg_game);
     const int shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
     if (!arg_play && !arg_2k && !arg_full && (!g_settings.skip || shift)) {
@@ -207,11 +282,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     join(tmp, engine, L"input\\PARAM.SFO");
     if (!exists(tmp)) return fail(L"Falta o PARAM.SFO:", tmp);
 
-    /* Game folder name: [paths] game= in launcher.ini (written by BUILD.bat),
-     * NPUA80523 by default. */
+    /* Game folder: --game, else [paths] game= in launcher.ini (written by
+     * BUILD.bat; a name next to this launcher or a full path), NPUA80523 by default. */
     wchar_t game_dir[MAXP], game[MAXP];
-    GetPrivateProfileStringW(L"paths", L"game", L"NPUA80523", game_dir, MAXP, g_ini);
-    join(game, g_base, game_dir);
+    if (arg_game) {
+        wcsncpy(game_dir, arg_game, MAXP - 1);
+        game_dir[MAXP - 1] = 0;
+    } else {
+        GetPrivateProfileStringW(L"paths", L"game", L"NPUA80523", game_dir, MAXP, g_ini);
+    }
+    strip_trailing_slashes(game_dir);
+    if (is_absolute(game_dir)) wcscpy(game, game_dir);
+    else join(game, g_base, game_dir);
     join(tmp, game, L"USRDIR");
     if (!exists(tmp)) return fail(L"Falta a pasta do jogo extraído (NPUA80523 com USRDIR dentro):", game);
 

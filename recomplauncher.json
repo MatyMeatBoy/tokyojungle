@@ -1,0 +1,61 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "Tokyo Jungle Recompiled",
+  "repo": "SilvioDiaz/tokyojungle",
+  "game": {
+    "kind": "folder",
+    "label": "Your extracted Tokyo Jungle folder, North American PSN release (NPUA80523), with PARAM.SFO and USRDIR inside. Put your license UP9000-NPUA80523_00-TOKYOJUNGLE00001.rap in that folder too.",
+    "check": { "file": "USRDIR/data/tj.edat" }
+  },
+  "prepare": {
+    "program": ["TokyoJungle.exe"],
+    "args": ["--prepare", "--game", "{game}"],
+    "label": "Building the game from your copy (30 to 60 minutes the first time)",
+    "timeout": 10800
+  },
+  "start": {
+    "program": ["TokyoJungle.exe"],
+    "args": ["-play", "--game", "{game}"]
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "ini",
+      "file": [{ "path": "{install}/launcher.ini" }]
+    }
+  ],
+  "settings": [
+    {
+      "id": "resolution",
+      "label": "Resolution",
+      "help": "1280 x 720 is the PS3's own and lighter. 2560 x 1440 is sharper, and on a 1080p screen it acts as supersampling.",
+      "choices": [
+        { "label": "1280 x 720", "set": { "video/resolution_2k": "0" } },
+        { "label": "2560 x 1440", "set": { "video/resolution_2k": "1" } }
+      ],
+      "defaults": { "video/resolution_2k": "0" }
+    },
+    {
+      "id": "display",
+      "label": "Display",
+      "help": "Full screen fills any monitor without changing its resolution.",
+      "choices": [
+        { "label": "Window", "set": { "video/fullscreen": "0" } },
+        { "label": "Full screen", "set": { "video/fullscreen": "1" } }
+      ],
+      "defaults": { "video/fullscreen": "0" }
+    }
+  ],
+  "saves": ["{install}/engine/savedata", "{install}/engine/controls.ini"],
+  "folders": {
+    "saves": [{ "path": "{install}/engine/savedata" }],
+    "logs": [{ "path": "{install}/logs" }],
+    "engine": [{ "path": "{install}/engine" }]
+  },
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your Survival and Story saves.", "open": "saves" },
+    { "id": "logs", "label": "Logs", "help": "stdout.log and stderr.log from the last session, for bug reports.", "open": "logs" },
+    { "id": "shaders", "label": "Shader cache", "help": "Shaders the game has built, so later runs don't stutter. Clearing only helps if graphics look wrong after an update.", "clear": "engine/shader-cache" }
+  ]
+}

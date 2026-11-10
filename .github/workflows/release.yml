@@ -1,0 +1,24 @@
+# Attaches the release zip (BUILD.bat, the launcher and recomplauncher.json) to every
+# published GitHub release, so RecompLauncher can install it. No game data is involved.
+name: Release zip
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make the zip
+        shell: pwsh
+        run: scripts\make_release.ps1 -Version "${{ github.event.release.tag_name }}"
+      - name: Upload it to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" (Get-ChildItem dist\*.zip).FullName --clobber

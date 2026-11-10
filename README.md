@@ -4,6 +4,8 @@
 
 **Tokyo Jungle (PS3, 2012) as a native Windows program. No emulator.**
 
+<a href="https://recomplauncher.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
+
 [**Download BUILD.bat**](../../releases/latest) · [Quick start](#quick-start) · [Português](#português) · [Controls](#controls) · [How it works](#how-it-works)
 
 ![Tokyo Jungle running natively, the title screen](assets/title-screen.gif)
@@ -35,6 +37,10 @@ You need Windows 10/11 (64-bit), about 10 GB free, and **your own copy** of Toky
 3. Open **`TokyoJungle.exe`**, pick the resolution and window mode, and play.
 
 That's it. If something goes wrong, the full log is in `build.log` in the same folder.
+
+**With [RecompLauncher](https://recomplauncher.com):** install Tokyo Jungle Recompiled there and pick your
+game folder (put the `.rap` inside it). The launcher runs the same build on its setup screen, shows the
+resolution and window settings on the game's page, and Play starts the game directly.
 
 <details>
 <summary><b>What BUILD.bat does</b></summary>
