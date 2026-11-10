@@ -7,6 +7,9 @@ rem  Coloque este arquivo numa pasta junto com:
 rem    - a pasta do jogo extraido (com USRDIR e PARAM.SFO dentro)
 rem    - o arquivo UP9000-NPUA80523_00-TOKYOJUNGLE00001.rap
 rem  e de dois cliques. No fim aparece o TokyoJungle.exe nesta pasta.
+rem
+rem  Opcoes (repassadas ao scripts\tj_build_all.ps1): -Rebuild, -Game <pasta>,
+rem  -Progress. TJ_NO_PAUSE=1 termina sem "pause" (setup do RecompLauncher).
 rem ==========================================================================
 set "ROOT=%~dp0"
 set "REPO=https://github.com/SilvioDiaz/tokyojungle.git"
@@ -30,11 +33,11 @@ if not exist "%SRC%\.git" (
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%\scripts\tj_build_all.ps1" -Root "%ROOT%." %*
 if errorlevel 1 goto :erro
 echo.
-pause
+if not defined TJ_NO_PAUSE pause
 exit /b 0
 
 :erro
 echo.
 echo O build parou com erro. Veja o arquivo build.log nesta pasta.
-pause
+if not defined TJ_NO_PAUSE pause
 exit /b 1

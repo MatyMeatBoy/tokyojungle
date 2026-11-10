@@ -11,10 +11,16 @@
 #
 # Steps: tools (winget) -> ps3recomp + patches -> decrypt with RPCS3 ->
 # generate PPU/SPU code -> compile -> launcher -> assemble.
+#
+# RecompLauncher (TokyoJungle.exe --prepare) adds -Game <folder> (the game folder,
+# anywhere; the .rap may also sit in it or next to it) and -Progress (prints
+# "progress <0..1> <text>" lines for its setup screen).
 param(
     [Parameter(Mandatory = $true)][string]$Root,
     [string]$Rpcs3 = '',        # existing rpcs3.exe; empty = auto-detect or download
-    [switch]$Rebuild            # regenerate and recompile even if the game is built
+    [switch]$Rebuild,           # regenerate and recompile even if the game is built
+    [Alias('Game')][string]$GameFolder = '',  # the extracted game folder; empty = found in -Root
+    [switch]$Progress           # print progress lines for RecompLauncher
 )
 $ErrorActionPreference = 'Continue'
 $Root = (Resolve-Path -LiteralPath $Root).ProviderPath
@@ -25,16 +31,24 @@ $PinnedRecomp = 'd7fff845aca42b5083791801a01d150f5f0ec18c'
 $ElfSha = '6D253F6429485B43B816FD6884611377626EE95DB5DD9200EA58395C93A0812D'
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 
-function Say($text) {
+$script:At = 0.0
+function Say-Progress([double]$at, $text) {
+    if (-not $Progress) { return }
+    if ($at -ge 0) { $script:At = $at }
+    Write-Host ('progress {0} {1}' -f $script:At.ToString('0.###', [Globalization.CultureInfo]::InvariantCulture), $text)
+}
+function Say($text, [double]$at = -1) {
     Write-Host ''
     Write-Host "==> $text" -ForegroundColor Cyan
     Add-Content -LiteralPath $Log -Value "==> $text"
+    Say-Progress $at $text
 }
 function Fail($text) {
     Write-Host ''
     Write-Host "ERRO: $text" -ForegroundColor Red
     Write-Host "Detalhes em: $Log"
     Add-Content -LiteralPath $Log -Value "ERRO: $text"
+    Say-Progress -1 "ERRO: $text"
     exit 1
 }
 # Run a native command, log everything, stop on failure.
@@ -63,21 +77,32 @@ function Find-WingetExe($pattern, $exe) {
 "Tokyo Jungle build $(Get-Date -Format s)" | Set-Content -LiteralPath $Log
 
 # --- 0. Inputs ------------------------------------------------------------------
-Say 'Procurando a pasta do jogo e o arquivo .rap'
-$game = Get-ChildItem -LiteralPath $Root -Directory |
-    Where-Object { (Test-Path (Join-Path $_.FullName 'USRDIR\EBOOT.BIN')) -and
-                   (Test-Path (Join-Path $_.FullName 'PARAM.SFO')) } | Select-Object -First 1
-if (-not $game) { Fail "nenhuma pasta com USRDIR\EBOOT.BIN e PARAM.SFO em $Root" }
+Say 'Procurando a pasta do jogo e o arquivo .rap' 0.01
+if ($GameFolder) {
+    $game = Get-Item -LiteralPath $GameFolder -ErrorAction SilentlyContinue
+    if (-not $game -or -not (Test-Path -LiteralPath (Join-Path $game.FullName 'USRDIR\EBOOT.BIN')) -or
+        -not (Test-Path -LiteralPath (Join-Path $game.FullName 'PARAM.SFO'))) {
+        Fail "a pasta $GameFolder nao tem USRDIR\EBOOT.BIN e PARAM.SFO"
+    }
+} else {
+    $game = Get-ChildItem -LiteralPath $Root -Directory |
+        Where-Object { (Test-Path (Join-Path $_.FullName 'USRDIR\EBOOT.BIN')) -and
+                       (Test-Path (Join-Path $_.FullName 'PARAM.SFO')) } | Select-Object -First 1
+    if (-not $game) { Fail "nenhuma pasta com USRDIR\EBOOT.BIN e PARAM.SFO em $Root" }
+}
 $sfo = [IO.File]::ReadAllBytes((Join-Path $game.FullName 'PARAM.SFO'))
 if (-not ([Text.Encoding]::ASCII.GetString($sfo)).Contains('NPUA80523')) {
     Fail "a pasta $($game.Name) nao e o Tokyo Jungle NPUA80523"
 }
-$rap = Get-ChildItem -LiteralPath $Root -Filter '*.rap' | Select-Object -First 1
-if (-not $rap) { Fail "falta o arquivo .rap em $Root (UP9000-NPUA80523_00-TOKYOJUNGLE00001.rap)" }
+# The license: next to BUILD.bat, else in the game folder or next to it.
+$rap = @($Root, $game.FullName, (Split-Path $game.FullName)) | Select-Object -Unique |
+    ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.rap' -ErrorAction SilentlyContinue } |
+    Select-Object -First 1
+if (-not $rap) { Fail "falta o arquivo .rap em $Root ou na pasta do jogo (UP9000-NPUA80523_00-TOKYOJUNGLE00001.rap)" }
 Write-Host "    jogo: $($game.Name)   licenca: $($rap.Name)"
 
 # --- 1. Tools ---------------------------------------------------------------------
-Say 'Conferindo ferramentas (Python, CMake, Ninja, LLVM, Visual Studio Build Tools, FFmpeg)'
+Say 'Conferindo ferramentas (Python, CMake, Ninja, LLVM, Visual Studio Build Tools, FFmpeg)' 0.03
 Refresh-Path
 $py = $null
 foreach ($c in @("$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
@@ -119,7 +144,7 @@ Run 'pip install' { & $py -m pip install -q --disable-pip-version-check -r (Join
 # --- 2. ps3recomp + patches --------------------------------------------------------
 $Recomp = Join-Path (Split-Path $Repo) 'ps3recomp'
 if (-not (Test-Path (Join-Path $Recomp '.tj-patched'))) {
-    Say 'Baixando o ps3recomp e aplicando os patches'
+    Say 'Baixando o ps3recomp e aplicando os patches' 0.1
     if (Test-Path $Recomp) { Remove-Item -Recurse -Force $Recomp }
     Run 'git clone ps3recomp' { git clone -q https://github.com/sp00nznet/ps3recomp.git $Recomp }
     Run 'git checkout' { git -C $Recomp checkout -q $PinnedRecomp }
@@ -136,9 +161,9 @@ New-Item -ItemType Directory -Force -Path $InDir, $Dec | Out-Null
 $edat = Join-Path $game.FullName 'USRDIR\data\tj.edat'
 $edatBackup = "$edat.original"
 $needElf = -not (Test-Path (Join-Path $InDir 'EBOOT.ELF'))
-$needEdat = (Get-Item $edat).Length -ne 22   # the decrypted tj.edat is 22 bytes
+$needEdat = (Get-Item -LiteralPath $edat).Length -ne 22   # the decrypted tj.edat is 22 bytes
 if ($needElf -or $needEdat) {
-    Say 'Descriptografando o jogo com a sua licenca (RPCS3)'
+    Say 'Descriptografando o jogo com a sua licenca (RPCS3)' 0.15
     if (-not $Rpcs3) {
         foreach ($c in @('C:\Emulator\PS3\rpcs3.exe', "$env:ProgramFiles\RPCS3\rpcs3.exe",
                          (Join-Path $Work 'rpcs3\rpcs3.exe'))) { if (Test-Path $c) { $Rpcs3 = $c; break } }
@@ -165,7 +190,7 @@ if ($needElf -or $needEdat) {
     Copy-Item -LiteralPath $rap.FullName -Destination $exdata -Force
     Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $Dec '*')
     Copy-Item -LiteralPath (Join-Path $game.FullName 'USRDIR\EBOOT.BIN') -Destination $Dec
-    if (Test-Path $edatBackup) { Copy-Item $edatBackup (Join-Path $Dec 'tj.edat') } else { Copy-Item $edat $Dec }
+    if (Test-Path -LiteralPath $edatBackup) { Copy-Item -LiteralPath $edatBackup (Join-Path $Dec 'tj.edat') } else { Copy-Item -LiteralPath $edat $Dec }
     # One file per call: RPCS3 decrypts only the first path it is given.
     foreach ($f in @('EBOOT.BIN', 'tj.edat')) {
         Start-Process -FilePath $Rpcs3 -WorkingDirectory (Split-Path $Rpcs3) -Wait -WindowStyle Hidden `
@@ -179,47 +204,77 @@ if ($needElf -or $needEdat) {
     Copy-Item $elf (Join-Path $InDir 'EBOOT.ELF') -Force
     $plain = Join-Path $Dec 'tj.edat.unedat'
     if (-not (Test-Path $plain)) { Fail 'o RPCS3 nao descriptografou o tj.edat' }
-    if (-not (Test-Path $edatBackup)) { Copy-Item $edat $edatBackup }
-    Copy-Item $plain $edat -Force   # the runtime reads a plain tj.edat directly
+    if (-not (Test-Path -LiteralPath $edatBackup)) { Copy-Item -LiteralPath $edat $edatBackup }
+    Copy-Item $plain -Destination $edat -Force   # the runtime reads a plain tj.edat directly
 }
-Copy-Item (Join-Path $game.FullName 'PARAM.SFO') (Join-Path $InDir 'PARAM.SFO') -Force
+Copy-Item -LiteralPath (Join-Path $game.FullName 'PARAM.SFO') (Join-Path $InDir 'PARAM.SFO') -Force
 
 # --- 4. Generate code and compile --------------------------------------------------------
 $Exe = Join-Path $Repo 'build-clang\tokyojungle.exe'
 Push-Location $Repo
 if ($Rebuild -or -not (Test-Path $Exe)) {
-    Say 'Convertendo o codigo do PS3 (PPU) -- alguns minutos'
+    Say 'Convertendo o codigo do PS3 (PPU) -- alguns minutos' 0.25
     if (Test-Path 'generated') { Remove-Item -Recurse -Force 'generated' }
     Run 'analyze.py' { & $py scripts\analyze.py }
     Run 'fix_import_slots.py' { & $py scripts\fix_import_slots.py }
     Run 'tj_split_fixups.py' { & $py scripts\tj_split_fixups.py }
-    Say 'Convertendo os 18 blocos SPU'
+    Say 'Convertendo os 18 blocos SPU' 0.35
     Run 'tj_extract_spu_images.py' { & $py scripts\tj_extract_spu_images.py }
     Run 'tj_lift_spu.py' { & $py scripts\tj_lift_spu.py }
     Run 'fuse_spu_loops.py' { & $py -I scripts\fuse_spu_loops.py --apply }
-    Say 'Compilando o jogo -- pode levar de 20 a 60 minutos'
+    Say 'Compilando o jogo -- pode levar de 20 a 60 minutos' 0.4
     Run 'cmake configure' { cmake -B build-clang -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl }
-    Run 'cmake build' { cmake --build build-clang }
+    if ($Progress) {
+        # Ninja's "[n/total]" lines become progress from 0.4 to 0.95.
+        & cmake --build build-clang *>&1 | ForEach-Object {
+            $line = "$_"
+            if ($line -match '^\[(\d+)/(\d+)\]') {
+                $p = [Math]::Round(0.4 + 0.55 * [int]$matches[1] / [int]$matches[2], 2)
+                if ($p -gt $script:At) { Say-Progress $p "Compilando o jogo ($($matches[1])/$($matches[2]))" }
+            }
+            $line
+        } | Add-Content -LiteralPath $Log
+        if ($LASTEXITCODE) { Fail "cmake build (codigo $LASTEXITCODE)" }
+    } else {
+        Run 'cmake build' { cmake --build build-clang }
+    }
 }
 if (-not (Test-Path $Exe)) { Fail 'a compilacao nao gerou o tokyojungle.exe' }
 
-Say 'Compilando o launcher'
+Say 'Compilando o launcher' 0.96
 $launcherSrc = Join-Path $Repo 'tools\launcher\launcher.c'
 $launcherExe = Join-Path $Work 'TokyoJungle.exe'
 Run 'launcher' { clang-cl /O2 /nologo /MT /utf-8 -D_CRT_SECURE_NO_WARNINGS $launcherSrc "/Fe:$launcherExe" "/Fo:$Work\launcher.obj" /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib }
 Pop-Location
 
 # --- 5. Assemble ---------------------------------------------------------------------------
-Say 'Montando a pasta final'
+Say 'Montando a pasta final' 0.98
 $Engine = Join-Path $Root 'engine'
 New-Item -ItemType Directory -Force -Path (Join-Path $Engine 'input') | Out-Null
 Copy-Item $Exe $Engine -Force
 Copy-Item $ffmpeg $Engine -Force
 Copy-Item (Join-Path $InDir 'EBOOT.ELF'), (Join-Path $InDir 'PARAM.SFO') (Join-Path $Engine 'input') -Force
 if (-not (Test-Path (Join-Path $Engine 'controls.ini'))) { Copy-Item (Join-Path $Repo 'controls.ini') $Engine }
-Copy-Item $launcherExe (Join-Path $Root 'TokyoJungle.exe') -Force
+$launcherDest = Join-Path $Root 'TokyoJungle.exe'
+try { Copy-Item $launcherExe $launcherDest -Force -ErrorAction Stop }
+catch {
+    # TokyoJungle.exe --prepare is running this build: a running exe can be renamed, not replaced.
+    Move-Item -LiteralPath $launcherDest "$launcherDest.old" -Force
+    Copy-Item $launcherExe $launcherDest -Force
+}
 $ini = Join-Path $Root 'launcher.ini'
-if (-not (Test-Path $ini)) { "[paths]`r`ngame=$($game.Name)`r`n" | Set-Content -LiteralPath $ini -Encoding ASCII }
+if ($GameFolder) {
+    # A folder picked anywhere: the launcher reads a full path in game=.
+    if (-not (Test-Path $ini)) { "[paths]`r`ngame=$($game.FullName)`r`n" | Set-Content -LiteralPath $ini -Encoding Default }
+    else {
+        $text = Get-Content -LiteralPath $ini -Raw
+        if ($text -notmatch '(?m)^game=') { Add-Content -LiteralPath $ini -Value "`r`n[paths]`r`ngame=$($game.FullName)" -Encoding Default }
+        else {
+            $text = $text -replace '(?m)^game=[^\r\n]*', ('game=' + $game.FullName.Replace('$', '$$'))
+            Set-Content -LiteralPath $ini -Value $text -NoNewline -Encoding Default
+        }
+    }
+} elseif (-not (Test-Path $ini)) { "[paths]`r`ngame=$($game.Name)`r`n" | Set-Content -LiteralPath $ini -Encoding ASCII }
 else {
     $text = Get-Content -LiteralPath $ini -Raw
     if ($text -notmatch '(?m)^game=') { Add-Content -LiteralPath $ini -Value "`r`n[paths]`r`ngame=$($game.Name)" }
@@ -228,4 +283,5 @@ else {
 Write-Host ''
 Write-Host 'PRONTO! Abra o TokyoJungle.exe para jogar.' -ForegroundColor Green
 Write-Host "A pasta $Work pode ser apagada (ocupa espaco; so serve para recompilar)."
+Say-Progress 1 'Pronto'
 exit 0
