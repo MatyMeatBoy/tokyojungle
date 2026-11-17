@@ -235,5 +235,3 @@ int lajungla_trophy_selftest(void) {
     if(parse_model(fixture,NULL,&model))return 6;
     return 0;
 }
-
-
