@@ -190,7 +190,9 @@ extern "C" int tj_savedata_transaction_recover_root(const char* directory) {
             const auto original=root/entry.path().filename();no_links(original);
             const auto previous=entry.path()/"previous";no_links(previous);
             if(!fs::exists(original)&&fs::exists(previous)) {
-                if(!tj_savedata_transaction_begin(original.u8string().c_str(),0))return 0;
+                const auto utf8=original.u8string();
+                const std::string bytes(reinterpret_cast<const char*>(utf8.data()),utf8.size());
+                if(!tj_savedata_transaction_begin(bytes.c_str(),0))return 0;
                 if(!tj_savedata_transaction_finish(1))return 0;
             }
         }

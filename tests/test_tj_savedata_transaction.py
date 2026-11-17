@@ -3,6 +3,8 @@ from pathlib import Path
 import shutil
 import subprocess
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT.parent/'ps3recomp'
 CLANG = shutil.which('clang') or r'C:\Program Files\LLVM\bin\clang.exe'
@@ -79,7 +81,7 @@ size_t tj_test_savedata_fwrite(const void* p,size_t size,size_t count,FILE* stre
     return source
 
 
-def compile_runtime_harness(tmp_path, atomic=True):
+def compile_runtime_harness(tmp_path, atomic=True, standard="c++17"):
     source = (RUNTIME/'libs/system/cellSaveData.c').read_text(encoding='utf-8')
     runtime_c = tmp_path/'libs/system/cellSaveData.c'
     runtime_c.parent.mkdir(parents=True)
@@ -102,12 +104,13 @@ def compile_runtime_harness(tmp_path, atomic=True):
 extern "C" void tj_test_savedata_gap(const char* path){namespace fs=std::filesystem;fs::path original=fs::absolute(fs::u8path(path));auto previous=original.parent_path()/".savedata-recovery"/original.filename()/"previous";fs::remove_all(previous);fs::rename(original,previous);}
 ''')
     sources = [str(extra)] + ([str(ROOT/'src/tj_savedata_transaction.cpp')] if atomic else [])
-    subprocess.run([CLANGXX, '-std=c++17', *sources, str(runtime_object), str(harness_object), '-o', str(executable)], check=True, capture_output=True, text=True)
+    subprocess.run([CLANGXX, '-std='+standard, *sources, str(runtime_object), str(harness_object), '-o', str(executable)], check=True, capture_output=True, text=True)
     return executable
 
 
-def test_actual_guest_save_late_failure_and_recreate_rollback(tmp_path):
-    executable = compile_runtime_harness(tmp_path)
+@pytest.mark.parametrize("standard", ["c++17", "c++20"])
+def test_actual_guest_save_late_failure_and_recreate_rollback(tmp_path, standard):
+    executable = compile_runtime_harness(tmp_path, standard=standard)
     subprocess.run([str(executable)], cwd=tmp_path, check=True, capture_output=True, text=True)
     subprocess.run([str(executable), 'userdata-rebinding'], cwd=tmp_path, check=True, capture_output=True, text=True)
     subprocess.run([str(executable), 'userdata-rebinding', 'interrupted-before-list'], cwd=tmp_path, check=True, capture_output=True, text=True)
@@ -125,38 +128,40 @@ HELPER_TEST = r'''
 #include <thread>
 extern "C" void tj_savedata_transaction_test_publish_failure(int);
 namespace fs=std::filesystem;
+static std::string bytes(const fs::path& p){auto s=p.u8string();return std::string(reinterpret_cast<const char*>(s.data()),s.size());}
 static void put(const fs::path& p,const char* data){fs::create_directories(p.parent_path());std::ofstream f(p,std::ios::binary);f<<data;assert(f.good());}
 static std::string get(const fs::path& p){std::ifstream f(p,std::ios::binary);return std::string(std::istreambuf_iterator<char>(f),{});}
-static fs::path route(const fs::path& p){char path[4096];auto s=p.u8string();std::strcpy(path,s.c_str());assert(tj_savedata_transaction_route(path,sizeof(path)));return fs::u8path(path);}
+static fs::path route(const fs::path& p){char path[4096];auto s=bytes(p);std::strcpy(path,s.c_str());assert(tj_savedata_transaction_route(path,sizeof(path)));return fs::u8path(path);}
 int main(int argc,char** argv){assert(argc==3);auto original=fs::absolute(fs::u8path(argv[1]));std::string mode=argv[2];
  auto work=original.parent_path()/".savedata-recovery"/original.filename();
- if(mode=="reject"){assert(!tj_savedata_transaction_begin(original.u8string().c_str(),1));return 0;}
- if(mode=="recover"){assert(tj_savedata_transaction_begin(original.u8string().c_str(),0));assert(route(original)==original);assert(get(original/"DATA.BIN")=="committed");assert(tj_savedata_transaction_finish(1));return 0;}
+ if(mode=="reject"){assert(!tj_savedata_transaction_begin(bytes(original).c_str(),1));return 0;}
+ if(mode=="recover"){assert(tj_savedata_transaction_begin(bytes(original).c_str(),0));assert(route(original)==original);assert(get(original/"DATA.BIN")=="committed");assert(tj_savedata_transaction_finish(1));return 0;}
  fs::create_directories(original);put(original/"DATA.BIN","committed");put(original/"PARAM.SFO","old metadata");put(original/"EXTRA.BIN","preserve me");
- assert(tj_savedata_transaction_begin(original.u8string().c_str(),1));auto pending=route(original);assert(pending!=original);
+ assert(tj_savedata_transaction_begin(bytes(original).c_str(),1));auto pending=route(original);assert(pending!=original);
  if(mode=="interrupt"){
    put(pending/"DATA.BIN","partial candidate");fs::remove_all(work/"previous");fs::rename(original,work/"previous");std::_Exit(0);
  }
- bool second_writer=true;std::thread other([&]{second_writer=tj_savedata_transaction_begin(original.u8string().c_str(),1)!=0;});other.join();assert(!second_writer);
+ bool second_writer=true;std::thread other([&]{second_writer=tj_savedata_transaction_begin(bytes(original).c_str(),1)!=0;});other.join();assert(!second_writer);
  put(pending/"DATA.BIN","partial candidate");put(pending/"PARAM.SFO","new metadata");fs::remove(pending/"EXTRA.BIN");
  assert(get(original/"DATA.BIN")=="committed");assert(tj_savedata_transaction_finish(0));
  assert(get(original/"DATA.BIN")=="committed"&&get(original/"PARAM.SFO")=="old metadata"&&get(original/"EXTRA.BIN")=="preserve me");
- assert(tj_savedata_transaction_begin(original.u8string().c_str(),1));pending=route(original);
+ assert(tj_savedata_transaction_begin(bytes(original).c_str(),1));pending=route(original);
  fs::remove_all(pending);put(pending/"DATA.BIN","recreated");put(pending/"PARAM.SFO","recreated metadata");
  tj_savedata_transaction_test_publish_failure(1);assert(!tj_savedata_transaction_finish(1));tj_savedata_transaction_test_publish_failure(0);
  assert(get(original/"DATA.BIN")=="committed"&&get(original/"EXTRA.BIN")=="preserve me");
- assert(tj_savedata_transaction_begin(original.u8string().c_str(),1));pending=route(original);put(pending/"DATA.BIN","new committed");assert(tj_savedata_transaction_finish(1));
+ assert(tj_savedata_transaction_begin(bytes(original).c_str(),1));pending=route(original);put(pending/"DATA.BIN","new committed");assert(tj_savedata_transaction_finish(1));
  assert(get(original/"DATA.BIN")=="new committed"&&get(work/"previous/DATA.BIN")=="committed");
- auto fresh=original.parent_path()/"new-slot";assert(tj_savedata_transaction_begin(fresh.u8string().c_str(),1));assert(!fs::exists(route(fresh)));assert(tj_savedata_transaction_finish(0));assert(!fs::exists(fresh));
+ auto fresh=original.parent_path()/"new-slot";assert(tj_savedata_transaction_begin(bytes(fresh).c_str(),1));assert(!fs::exists(route(fresh)));assert(tj_savedata_transaction_finish(0));assert(!fs::exists(fresh));
  return 0;}
 '''
 
 
-def test_commit_rename_failure_interruption_recovery_and_links(tmp_path):
+@pytest.mark.parametrize("standard", ["c++17", "c++20"])
+def test_commit_rename_failure_interruption_recovery_and_links(tmp_path, standard):
     harness = tmp_path/'transaction.cpp'
     harness.write_text(HELPER_TEST)
     executable = tmp_path/'transaction.exe'
-    subprocess.run([CLANGXX, '-std=c++17', '-DTJ_SAVEDATA_TRANSACTION_TEST=1',
+    subprocess.run([CLANGXX, '-std='+standard, '-DTJ_SAVEDATA_TRANSACTION_TEST=1',
                     '-I', str(ROOT/'src'), str(harness), str(ROOT/'src/tj_savedata_transaction.cpp'),
                     '-o', str(executable)], check=True, capture_output=True, text=True)
     slot = tmp_path/'saves/slot'
