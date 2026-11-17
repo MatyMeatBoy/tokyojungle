@@ -32,11 +32,12 @@
 
 #define MAXP 1024
 
-enum { ID_RES_720 = 101, ID_RES_2K, ID_WINDOWED, ID_FULLSCREEN, ID_SKIP, ID_PLAY, ID_QUIT };
+enum { ID_RES_720 = 101, ID_RES_2K, ID_WINDOWED, ID_FULLSCREEN, ID_SKIP, ID_PLAY, ID_QUIT, ID_PROMPTS };
 
 typedef struct {
     int two_k;       /* 0: 1280x720, 1: 2560x1440 */
     int fullscreen;  /* 0: window, 1: borderless full screen */
+    int prompts;    /* 0 PlayStation (default), 1 Xbox, 2 Nintendo, 3 keyboard, 4 auto */
     int skip;        /* 1: start directly next time */
 } Settings;
 
@@ -70,13 +71,30 @@ static int fail(const wchar_t* msg, const wchar_t* path) {
     return 1;
 }
 
+static const wchar_t* prompt_values[] = { L"playstation", L"xbox", L"nintendo", L"keyboard", L"auto" };
+static const wchar_t* prompt_labels[] = { L"PlayStation (original)", L"Xbox", L"Nintendo / Switch", L"Teclado", L"AutomÃ¡tico (Ãºltimo dispositivo)" };
+
+static int prompt_setting_index(const wchar_t* value) {
+    for (int i = 0; i < 5; ++i) if (_wcsicmp(value, prompt_values[i]) == 0) return i;
+    return 0;
+}
+
+static void configure_prompt_environment(void) {
+    SetEnvironmentVariableW(L"LAJUNGLA_PROMPTS", prompt_values[g_settings.prompts]);
+    SetEnvironmentVariableW(L"TJ_PROMPTS", g_settings.prompts == 0 ? L"0" : L"1");
+}
+
 static void load_settings(void) {
+    wchar_t prompts[32];
+    GetPrivateProfileStringW(L"controls", L"prompt_family", L"playstation", prompts, 32, g_ini);
+    g_settings.prompts = prompt_setting_index(prompts);
     g_settings.two_k = GetPrivateProfileIntW(L"video", L"resolution_2k", 0, g_ini) != 0;
     g_settings.fullscreen = GetPrivateProfileIntW(L"video", L"fullscreen", 0, g_ini) != 0;
     g_settings.skip = GetPrivateProfileIntW(L"launcher", L"dont_ask", 0, g_ini) != 0;
 }
 
 static void save_settings(void) {
+    WritePrivateProfileStringW(L"controls", L"prompt_family", prompt_values[g_settings.prompts], g_ini);
     WritePrivateProfileStringW(L"video", L"resolution_2k", g_settings.two_k ? L"1" : L"0", g_ini);
     WritePrivateProfileStringW(L"video", L"fullscreen", g_settings.fullscreen ? L"1" : L"0", g_ini);
     WritePrivateProfileStringW(L"launcher", L"dont_ask", g_settings.skip ? L"1" : L"0", g_ini);
@@ -95,21 +113,21 @@ static HWND add(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD styl
 static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
-        add(hwnd, L"BUTTON", L"Resolução", BS_GROUPBOX, 12, 8, 316, 78, 0);
+        add(hwnd, L"BUTTON", L"ResoluÃƒÂ§ÃƒÂ£o", BS_GROUPBOX, 12, 8, 316, 78, 0);
         add(hwnd, L"BUTTON", L"1280 x 720  (original do PS3, mais leve)",
             BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 24, 30, 296, 22, ID_RES_720);
-        add(hwnd, L"BUTTON", L"2560 x 1440  (2K, mais nítido)",
+        add(hwnd, L"BUTTON", L"2560 x 1440  (2K, mais nÃƒÂ­tido)",
             BS_AUTORADIOBUTTON, 24, 56, 296, 22, ID_RES_2K);
         add(hwnd, L"BUTTON", L"Tela", BS_GROUPBOX, 12, 94, 316, 78, 0);
         add(hwnd, L"BUTTON", L"Janela",
             BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 24, 116, 296, 22, ID_WINDOWED);
         add(hwnd, L"BUTTON", L"Tela cheia",
             BS_AUTORADIOBUTTON, 24, 142, 296, 22, ID_FULLSCREEN);
-        add(hwnd, L"BUTTON", L"Não perguntar de novo (segure Shift ao abrir para mudar)",
-            BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP, 14, 180, 316, 22, ID_SKIP);
+        add(hwnd, L"BUTTON", L"NÃƒÂ£o perguntar de novo (segure Shift ao abrir para mudar)",
+            BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP, 14, 242, 316, 22, ID_SKIP);
         add(hwnd, L"BUTTON", L"Jogar", BS_DEFPUSHBUTTON | WS_GROUP | WS_TABSTOP,
-            146, 214, 88, 30, ID_PLAY);
-        add(hwnd, L"BUTTON", L"Sair", BS_PUSHBUTTON | WS_TABSTOP, 240, 214, 88, 30, ID_QUIT);
+            146, 276, 88, 30, ID_PLAY);
+        add(hwnd, L"BUTTON", L"Sair", BS_PUSHBUTTON | WS_TABSTOP, 240, 276, 88, 30, ID_QUIT);
         CheckRadioButton(hwnd, ID_RES_720, ID_RES_2K, g_settings.two_k ? ID_RES_2K : ID_RES_720);
         CheckRadioButton(hwnd, ID_WINDOWED, ID_FULLSCREEN,
                          g_settings.fullscreen ? ID_FULLSCREEN : ID_WINDOWED);
@@ -121,6 +139,8 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (LOWORD(wp) == ID_PLAY || LOWORD(wp) == IDOK) {
             g_settings.two_k = IsDlgButtonChecked(hwnd, ID_RES_2K) == BST_CHECKED;
             g_settings.fullscreen = IsDlgButtonChecked(hwnd, ID_FULLSCREEN) == BST_CHECKED;
+            const LRESULT selected = SendDlgItemMessageW(hwnd, ID_PROMPTS, CB_GETCURSEL, 0, 0);
+            g_settings.prompts = (selected >= 0 && selected < 5) ? (int)selected : 0;
             g_settings.skip = IsDlgButtonChecked(hwnd, ID_SKIP) == BST_CHECKED;
             g_play = 1;
             DestroyWindow(hwnd);
@@ -154,7 +174,7 @@ static int show_settings(HINSTANCE inst) {
     RegisterClassW(&wc);
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r = {0, 0, 340, 256};
+    RECT r = {0, 0, 340, 320};
     AdjustWindowRect(&r, style, FALSE);
     const int w = r.right - r.left, h = r.bottom - r.top;
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"Tokyo Jungle", style,
@@ -275,7 +295,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
         }
     }
     if (!found)
-        return fail(L"Não encontrei o jogo (tokyojungle.exe) em engine\\ ou build\\tokyojungle\\ ao lado deste launcher.", g_base);
+        return fail(L"NÃƒÂ£o encontrei o jogo (tokyojungle.exe) em engine\\ ou build\\tokyojungle\\ ao lado deste launcher.", g_base);
 
     join(tmp, engine, L"input\\EBOOT.ELF");
     if (!exists(tmp)) return fail(L"Falta o EBOOT.ELF descriptografado:", tmp);
@@ -295,7 +315,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     if (is_absolute(game_dir)) wcscpy(game, game_dir);
     else join(game, g_base, game_dir);
     join(tmp, game, L"USRDIR");
-    if (!exists(tmp)) return fail(L"Falta a pasta do jogo extraído (NPUA80523 com USRDIR dentro):", game);
+    if (!exists(tmp)) return fail(L"Falta a pasta do jogo extraÃƒÂ­do (NPUA80523 com USRDIR dentro):", game);
 
     wchar_t saves[MAXP], cache[MAXP], controls[MAXP], logs[MAXP], out_log[MAXP], err_log[MAXP];
     join(saves, engine, L"savedata");
@@ -307,6 +327,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     CreateDirectoryW(logs, NULL);
     join(out_log, logs, L"stdout.log");
     join(err_log, logs, L"stderr.log");
+
+    configure_prompt_environment();
 
     /* Same environment as launch_tokyojungle.ps1 -Run -Recommended. */
     SetEnvironmentVariableW(L"PS3_VFS_ROOT", game);
@@ -355,7 +377,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     STARTUPINFOW si = { sizeof si };
     PROCESS_INFORMATION pi;
     if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, engine, &si, &pi))
-        return fail(L"Não consegui iniciar o jogo:", exe);
+        return fail(L"NÃƒÂ£o consegui iniciar o jogo:", exe);
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 0;
     GetExitCodeProcess(pi.hProcess, &code);
