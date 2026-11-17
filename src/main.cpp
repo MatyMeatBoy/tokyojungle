@@ -11,6 +11,9 @@
 #include <atomic>
 #include <array>
 #include <mutex>
+#include "lajungla_trophies.h"
+#include "lajungla_language.h"
+#include <string>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -2829,6 +2832,27 @@ static void tj_redirect_std_stream_to_file(const wchar_t* env_name,
 }
 #endif
 
+static void tj_configure_trophies()
+{
+        const char* catalog = getenv("LAJUNGLA_TROPHY_CATALOG");
+        const char* state = getenv("LAJUNGLA_TROPHY_DIR");
+        const char* language = getenv("LAJUNGLA_LANGUAGE");
+        const char* folder = "es";
+        if (language && (!strcmp(language, "en") || !strcmp(language, "fr") || !strcmp(language, "pt")))
+            folder = language;
+        const char* vfs = getenv("PS3_VFS_ROOT");
+        const char* saves = getenv("PS3_SAVEDATA_ROOT");
+        std::string fallback = std::string(vfs && *vfs ? vfs : ".") + "/.lajungla/trophies/" + folder + "/catalog.bin";
+        std::string fallback_state = std::string(saves && *saves ? saves : "savedata") + "/trophies";
+        if (!lajungla_trophies_configure(catalog ? catalog : fallback.c_str(),
+                                        state ? state : fallback_state.c_str()))
+            fprintf(stderr, "[TJ] Trophy catalog/state unavailable; run content setup or inspect trophy state.\n");
+        lajungla_trophies_register();
+        if (getenv("YDKJ_INJECT_PAD") || getenv("LAJUNGLA_CAPTURE_SPU") ||
+            getenv("PS3_PAD_ONESHOT_MS") || getenv("TJ_TITLE_SAVE_PROBE"))
+            lajungla_trophies_casual("diagnostic run");
+}
+
 int main(int argc, char* argv[])
 {
 #ifdef _WIN32
@@ -2837,7 +2861,7 @@ int main(int argc, char* argv[])
                                    STD_ERROR_HANDLE, stderr);
     tj_redirect_std_stream_to_file(L"TJ_STDOUT_FILE", "TJ_STDOUT_FILE", 1,
                                    STD_OUTPUT_HANDLE, stdout);
-    tj_install_crash_report();   /* any-thread crash -> stderr + minidump */
+    tj_install_crash_report();
 #endif
     // Explicit renderer-only diagnostic: no ELF, title threads, VFS or saves.
     if (argc == 3 && strcmp(argv[1], "--rsx-reference") == 0) {
@@ -3022,6 +3046,7 @@ int main(int argc, char* argv[])
     // all fall back to a return-0 stub -- including all of cellResc, which is
     // how this game reaches the display.
     ppu_hle_register_all();
+    tj_configure_trophies();
     /* Boot-critical context-aware handlers that live outside the generated
      * table: _cellGcmInitBody (NID 0x15BAE46B), sys_initialize_tls, ... .
      * Without this the GCM init stays on TJ's stub, ps3recomp's GCM never
@@ -3259,7 +3284,16 @@ int main(int argc, char* argv[])
                          tj_npCommerceOffline);
     ps3_hle_register_ctx(0xE0F90E44u, "sceNpCommerce2InitGetProductInfoListResult",
                          tj_npCommerceOffline);
+#if TJ_ENABLE_SPU
     tj_spu_register_all();
+#else
+    if (!getenv("LAJUNGLA_CAPTURE_SPU")) {
+        fprintf(stderr, "[LaJungla] Diagnostic build: SPU lifting is disabled. "
+                        "Rebuild with TJ_ENABLE_SPU=ON to play.\n");
+        return 2;
+    }
+    fprintf(stderr, "[LaJungla] Capturing SPU images only; this is not a playable build.\n");
+#endif
     printf("[TJ] Lifted SPU workloads registered: %u\n", spu_workload_count());
     printf("[HLE] ps3recomp NID registry: %u generic + %u context handlers\n",
            ps3_hle_count(), ps3_hle_ctx_count());
@@ -3492,6 +3526,7 @@ int main(int argc, char* argv[])
      * so join the ticker before closing that handle. */
     tj_stop_present_thread();
     tj_stop_watchdog();
+    lajungla_trophies_shutdown();
     if (guest_world_registered_count() != 1) {
         fprintf(stderr, "[guest-world] refusing vm_shutdown with %u registered worker(s)\n",
                 guest_world_registered_count());
