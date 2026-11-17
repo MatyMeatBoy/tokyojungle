@@ -164,3 +164,38 @@ extern "C" int tj_savedata_transaction_finish(int success) {
         return 0;
     }
 }
+
+extern "C" int tj_savedata_transaction_delete(const char* directory) {
+    if(!tj_savedata_transaction_begin(directory,0))return 0;
+    auto tx=std::move(active);
+    try {
+        // Explicit deletion invalidates recovery FIRST, under the same lock.
+        // Otherwise the next load would resurrect a deliberately deleted slot.
+        remove_tree(tx->previous);
+        remove_tree(tx->original);
+        return 1;
+    }catch(const std::exception& e) {
+        std::fprintf(stderr,"[cellSaveData] transaction delete failed: %s\n",e.what());return 0;
+    }
+}
+
+extern "C" int tj_savedata_transaction_recover_root(const char* directory) {
+    if(!directory||!*directory)return 0;
+    try {
+        const auto root=fs::absolute(fs::u8path(directory)).lexically_normal();
+        const auto recovery=root/".savedata-recovery";no_links(recovery);
+        if(!fs::exists(recovery))return 1;
+        for(const auto& entry:fs::directory_iterator(recovery)) {
+            no_links(entry.path());if(!entry.is_directory())return 0;
+            const auto original=root/entry.path().filename();no_links(original);
+            const auto previous=entry.path()/"previous";no_links(previous);
+            if(!fs::exists(original)&&fs::exists(previous)) {
+                if(!tj_savedata_transaction_begin(original.u8string().c_str(),0))return 0;
+                if(!tj_savedata_transaction_finish(1))return 0;
+            }
+        }
+        return 1;
+    }catch(const std::exception& e) {
+        std::fprintf(stderr,"[cellSaveData] recovery before enumeration failed: %s\n",e.what());return 0;
+    }
+}

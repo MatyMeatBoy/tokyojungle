@@ -17,12 +17,21 @@ size_t tj_test_savedata_fwrite(const void* p,size_t size,size_t count,FILE* stre
     if(inject_short_write&&count){inject_short_write=0;return fwrite(p,size,count-1,stream);}
     return fwrite(p,size,count,stream);
 }'''.replace('\n+', '\n'))
-    source = source.replace('static int s_is_save;', 'static int s_is_save;\nstatic int fail_after_write;')
+    source = source.replace('static int s_is_save;', 'static int s_is_save;\nstatic int fail_after_write,expect_deleted,test_gap_mode;\nextern void tj_test_savedata_gap(const char*);\nextern void cellSaveDataFixedDelete_ctx(ppu_context*);')
+    source = source.replace('    if (opd == STAT_OPD) {', '''    if (opd == 0x3000) {
+        write_be32(set_ea,DIR_EA);write_be32(set_ea+8,CELL_SAVEDATA_OPTION_NOCONFIRM);
+        write_be32(cb_ea,CELL_SAVEDATA_CBRESULT_OK_NEXT);return;
+    }
+    if(opd==0x4000){expect_u32("actual FixedDelete result",read_be32(get_ea),CELL_OK);write_be32(cb_ea,CELL_SAVEDATA_CBRESULT_OK_LAST);return;}
+    if (opd == STAT_OPD) {
+        if(expect_deleted){expect_u32("deleted slot remains new",read_be32(get_ea+4),1);write_be32(cb_ea,(uint32_t)CELL_SAVEDATA_CBRESULT_ERR_NODATA);return;}
+'''.replace('\n+', '\n'))
     source = source.replace('    if (opd == FILE_OPD) {', '''    if (opd == FILE_OPD) {
         if (fail_after_write && s_file_phase) {
             write_be32(cb_ea, CELL_SAVEDATA_CBRESULT_ERR_FAILURE);
             return;
         }''')
+    source = source.replace('s_rebind_userdata = argc > 1;', 's_rebind_userdata = argc > 1;test_gap_mode=argc>2;')
     marker = '    check_native_callbacks(data_path);'
     extra = '''    /* Both ordinary overwrite and reCreate must roll back a later failure. */
     s_is_save=1;s_expect_new=0;fail_after_write=0;
@@ -48,7 +57,26 @@ size_t tj_test_savedata_fwrite(const void* p,size_t size,size_t count,FILE* stre
     fail_after_write=0;s_recreate_mode=CELL_SAVEDATA_RECREATE_NO_NOBROKEN;
     memcpy(vm_base+SAVE_BUF_EA,s_payload,sizeof(s_payload));
 '''
-    return source.replace(marker, extra+marker)
+    source = source.replace(marker, extra+marker)
+    source = source.replace('    check_file_requests(data_path);', r'''    check_file_requests(data_path);
+    { /* Delete through the real guest handler, then load the same slot. */
+      unsigned char saved_buf[40];memcpy(saved_buf,vm_base+SETBUF_EA,40);
+      const uint32_t list=0x00106200u,buffer=0x00110000u;
+      memset(vm_base+list,0,16);write_be32(list+8,DIR_EA);
+      memset(vm_base+SETBUF_EA,0,40);write_be32(SETBUF_EA,8);write_be32(SETBUF_EA+32,384);write_be32(SETBUF_EA+36,buffer);
+      ppu_context ctx={0};ctx.gpr[3]=list;ctx.gpr[4]=SETBUF_EA;ctx.gpr[5]=0x3000;ctx.gpr[6]=0x4000;
+      if(test_gap_mode)tj_test_savedata_gap(save_dir);
+      cellSaveDataFixedDelete_ctx(&ctx);expect_u32("FixedDelete ABI result",(uint32_t)ctx.gpr[3],CELL_OK);
+      expect_u32("actual delete removed payload",file_exists(data_path),0);
+      memcpy(vm_base+SETBUF_EA,saved_buf,40);expect_deleted=1;
+      rc=cellSaveDataAutoLoad2(0,(const char*)(uintptr_t)DIR_EA,0,
+        (CellSaveDataSetBuf*)(uintptr_t)SETBUF_EA,(CellSaveDataStatCallback)(uintptr_t)STAT_OPD,
+        (CellSaveDataFileCallback)(uintptr_t)FILE_OPD,0,(void*)(uintptr_t)0x12345678u);
+      expect_u32("deleted load reports no data through callback",(uint32_t)rc,(uint32_t)CELL_SAVEDATA_ERROR_CBRESULT);
+      expect_u32("deleted payload not resurrected",file_exists(data_path),0);expect_deleted=0;
+    }
+''')
+    return source
 
 
 def compile_runtime_harness(tmp_path, atomic=True):
@@ -69,7 +97,11 @@ def compile_runtime_harness(tmp_path, atomic=True):
     subprocess.run([CLANG, '-std=c11', *include, *flags, '-c', str(runtime_c), '-o', str(runtime_object)], check=True, capture_output=True, text=True)
     subprocess.run([CLANG, '-std=c11', *include, '-c', str(harness), '-o', str(harness_object)], check=True, capture_output=True, text=True)
     executable = tmp_path/'savedata.exe'
-    sources = [str(ROOT/'src/tj_savedata_transaction.cpp')] if atomic else []
+    extra = tmp_path/'interrupt.cpp'
+    extra.write_text('''#include <filesystem>
+extern "C" void tj_test_savedata_gap(const char* path){namespace fs=std::filesystem;fs::path original=fs::absolute(fs::u8path(path));auto previous=original.parent_path()/".savedata-recovery"/original.filename()/"previous";fs::remove_all(previous);fs::rename(original,previous);}
+''')
+    sources = [str(extra)] + ([str(ROOT/'src/tj_savedata_transaction.cpp')] if atomic else [])
     subprocess.run([CLANGXX, '-std=c++17', *sources, str(runtime_object), str(harness_object), '-o', str(executable)], check=True, capture_output=True, text=True)
     return executable
 
@@ -78,6 +110,7 @@ def test_actual_guest_save_late_failure_and_recreate_rollback(tmp_path):
     executable = compile_runtime_harness(tmp_path)
     subprocess.run([str(executable)], cwd=tmp_path, check=True, capture_output=True, text=True)
     subprocess.run([str(executable), 'userdata-rebinding'], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run([str(executable), 'userdata-rebinding', 'interrupted-before-list'], cwd=tmp_path, check=True, capture_output=True, text=True)
 
 
 HELPER_TEST = r'''

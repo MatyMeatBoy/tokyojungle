@@ -26,6 +26,10 @@ failure. A short-write injection exercises the actual file producer as well.
   points are rejected before copying, deleting or publishing directories.
 - A single prior generation is retained outside manual slots, at
   `<savedata-root>/.savedata-recovery/<slot>/previous`.
+- Explicit FixedDelete uses the same slot lock and clears its prior generation
+  before deletion. A later load cannot resurrect a deliberately deleted save.
+- List/Fixed enumeration recovers interrupted slots under their locks before
+  offering the directory list to game callbacks.
 - If a process stops between moving the original aside and publishing its
   replacement, the next save **or load** restores that committed generation
   before callbacks see the slot. An unfinished candidate is discarded.
@@ -52,6 +56,10 @@ python -m pytest tests/test_tj_savedata_transaction.py -q
 
 The tests compile and execute the actual runtime and existing guest-I/O harness,
 with additional late callback failures, short writes and failed `reCreate`.
+It also calls the actual FixedDelete guest handler after two saves and then
+AutoLoad, checking that the slot stays absent and is reported as new. A separate
+run interrupts directory publication before FixedDelete enumeration to verify
+that listing sees the recovered slot before deleting it.
 They retain its normal reads, writes, offset/truncation checks and callback
 userdata rebinding. Separate helper tests cover failed directory publication,
 metadata/delete rollback, concurrent operation rejection, interrupted-process
