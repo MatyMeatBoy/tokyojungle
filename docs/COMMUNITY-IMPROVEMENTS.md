@@ -64,6 +64,11 @@ the launcher uses an independently licensed JSON reader. Native definitions and
 IDs are provided to RecompLauncher, and stored unlocks are not emitted as new
 live events. Original trophy texts/icons are not part of this repository.
 
+New unlocks also show a [classic PS3-style in-game popup](TROPHY-POPUP.md), with
+the locally extracted badge, translated message and trophy grade. Preview mode
+is isolated from game progress; the launcher's quiet-toast flag prevents duplicate
+native notifications.
+
 ## Build and verification limits
 
 Cached ELF input is checked even when decryption or compilation is skipped.

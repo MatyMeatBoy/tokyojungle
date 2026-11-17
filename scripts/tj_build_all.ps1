@@ -171,7 +171,7 @@ function Read-Stamp($path) {
     if (-not $text) { return '' }     # old builds left an empty .tj-patched
     return $text.Trim()
 }
-$Patches = @('ps3recomp-tokyojungle-2026-10-17.patch', 'tj-build-fixes.patch', 'lajungla-gamepads.patch', 'lajungla-trophies.patch', 'tj-savedata-atomic.patch')
+$Patches = @('ps3recomp-tokyojungle-2026-10-17.patch', 'tj-build-fixes.patch', 'lajungla-gamepads.patch', 'lajungla-trophies.patch', 'tj-savedata-atomic.patch', 'tj-trophy-popup.patch')
 $PatchStamp = ($Patches | ForEach-Object {
     (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Repo "patches\ps3recomp\$_")).Hash
 }) -join ' '

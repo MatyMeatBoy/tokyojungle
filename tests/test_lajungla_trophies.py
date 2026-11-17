@@ -88,6 +88,7 @@ static std::array<uint8_t,1048576> memory{};
 extern "C" {uint8_t* vm_base=memory.data();}
 static std::map<uint32_t,void*> functions;
 static unsigned native_events,notifications,loads,frames,casuals;
+static bool quiet_toasts=false;
 extern "C" void ps3_hle_register(uint32_t id,const char*,void* fn){functions[id]=fn;}
 extern "C" unsigned long long ppu_guest_call_ct(uint32_t code,uint32_t toc,
  uint64_t ctx,uint64_t status,uint64_t complete,uint64_t total,uint64_t arg,uint64_t,uint64_t,uint64_t) {
@@ -98,7 +99,7 @@ extern "C" int rl_ach_init(const char* console,void*,void*){assert(std::string(c
 static unsigned definitions=0;
 extern "C" void rl_ach_native_define(uint32_t id,const char* title,const char*,uint32_t points){assert(id==definitions&&std::string(title)=="Fixture "+std::to_string(id));assert(points==(id==0?25u:id<4?10u:5u));++definitions;}
 extern "C" void rl_ach_native(uint32_t id){assert(id<=1);++native_events;}
-extern "C" int rl_ach_quiet_toasts(){return 0;}
+extern "C" int rl_ach_quiet_toasts(){return quiet_toasts;}
 extern "C" void rl_ach_frame(){++frames;}
 extern "C" void rl_ach_save_loaded(){++loads;}
 extern "C" void rl_ach_casual(const char*){++casuals;}
@@ -152,7 +153,11 @@ int main(int argc,char** argv){
  assert(call(0x8ceedd21,uint32_t(1),uint32_t(1),uint32_t(1),uint32_t(0x22000))==0x8002291a);
  assert(call(0xb3ac3478,uint32_t(1),uint32_t(1),uint32_t(0x25000),uint32_t(0x25010))==0&&rd(0x25000)==1);
  assert(notifications==1);fs::remove(directory);fs::rename(backup,directory);
- assert(call(0x8ceedd21,uint32_t(1),uint32_t(1),uint32_t(1),uint32_t(0))==0&&notifications==2);
+#ifdef TEST_QUIET_TOASTS
+ quiet_toasts=true;
+#endif
+ assert(call(0x8ceedd21,uint32_t(1),uint32_t(1),uint32_t(1),uint32_t(0))==0);
+ assert(notifications==(quiet_toasts?1u:2u));
  lajungla_trophies_frame();lajungla_trophies_save_loaded();lajungla_trophies_casual("debug");lajungla_trophies_shutdown();
 #ifdef LAJUNGLA_RECOMP_ACHIEVEMENTS
  assert(native_events==2&&loads==3&&frames==1&&casuals==1);
@@ -164,8 +169,8 @@ int main(int argc,char** argv){
 '''
 
 
-@pytest.mark.parametrize('sdk', [False, True])
-def test_actual_cpp_hle_abi_persistence_and_optional_sdk(tmp_path, sdk):
+@pytest.mark.parametrize('sdk,quiet', [(False,False), (True,False), (True,True)])
+def test_actual_cpp_hle_abi_persistence_and_optional_sdk(tmp_path, sdk, quiet):
     binary = tmp_path/'catalog.bin'
     binary.write_bytes(encode_catalog(catalog()))
     harness = tmp_path/'harness.cpp'
@@ -183,6 +188,8 @@ void rl_ach_save_loaded();void rl_ach_casual(const char*);void rl_ach_shutdown()
                '-I', str(ROOT/'src'), '-I', str(tmp_path), str(harness), str(ROOT/'src/lajungla_trophies.cpp'), '-o', str(exe)]
     if sdk:
         command.append('-DLAJUNGLA_RECOMP_ACHIEVEMENTS=1')
+    if quiet:
+        command.append('-DTEST_QUIET_TOASTS=1')
     subprocess.run(command, check=True, capture_output=True, text=True)
     subprocess.run([str(exe), str(binary), str(tmp_path/'state')], check=True)
     persisted = json.loads((tmp_path/'state/NPWR01344_00.json').read_text())

@@ -34,6 +34,10 @@
       {
         "path": "patches/ps3recomp/tj-savedata-atomic.patch",
         "sha256": "a27a5abd7817c9e008ff8dbaeed63921f1dca111c14d37b279a9df5971af3189"
+      },
+      {
+        "path": "patches/ps3recomp/tj-trophy-popup.patch",
+        "sha256": "e8359d70a4bfb946fe4d2e7e7d3272e27e4dd3aaf23c243268c9c9bf8e76b116"
       }
     ]
   },

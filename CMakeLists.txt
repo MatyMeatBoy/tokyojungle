@@ -284,6 +284,7 @@ endif()
 add_executable(tokyojungle
     src/main.cpp
     src/lajungla_trophies.cpp
+    src/tj_trophy_popup.cpp
     src/tj_savedata_transaction.cpp
     src/tj_rsx_reference.cpp
     src/stubs.cpp
@@ -325,7 +326,7 @@ target_include_directories(tokyojungle PRIVATE
 )
 
 add_subdirectory(third_party/recompachievements EXCLUDE_FROM_ALL)
-target_compile_definitions(ps3recomp_runtime PRIVATE LAJUNGLA_TROPHIES TJ_SAVEDATA_TRANSACTION)
+target_compile_definitions(ps3recomp_runtime PRIVATE LAJUNGLA_TROPHIES TJ_SAVEDATA_TRANSACTION TJ_TROPHY_POPUP)
 set_property(SOURCE src/lajungla_trophies.cpp APPEND PROPERTY COMPILE_DEFINITIONS LAJUNGLA_RECOMP_ACHIEVEMENTS)
 target_link_libraries(tokyojungle PRIVATE
     rl_achievements
@@ -668,6 +669,9 @@ if(WIN32)
          "1 ICON \"${CMAKE_SOURCE_DIR}/assets/community/tokyojungle.ico\"\n")
     target_sources(tokyojungle PRIVATE "${CMAKE_BINARY_DIR}/tj_community_icon.rc")
     target_link_libraries(tokyojungle PRIVATE
+        user32
+        gdi32
+        windowscodecs
         ws2_32
         xinput
         ole32

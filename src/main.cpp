@@ -12,6 +12,7 @@
 #include <array>
 #include <mutex>
 #include "lajungla_trophies.h"
+#include "tj_trophy_popup.h"
 #include "lajungla_language.h"
 #include <string>
 
@@ -2844,6 +2845,8 @@ static void tj_configure_trophies()
         const char* saves = getenv("PS3_SAVEDATA_ROOT");
         std::string fallback = std::string(vfs && *vfs ? vfs : ".") + "/.lajungla/trophies/" + folder + "/catalog.bin";
         std::string fallback_state = std::string(saves && *saves ? saves : "savedata") + "/trophies";
+        tj_trophy_popup_configure(catalog ? catalog : fallback.c_str(), folder);
+        lajungla_trophies_set_notify(tj_trophy_popup_notify);
         if (!lajungla_trophies_configure(catalog ? catalog : fallback.c_str(),
                                         state ? state : fallback_state.c_str()))
             fprintf(stderr, "[TJ] Trophy catalog/state unavailable; run content setup or inspect trophy state.\n");
@@ -2864,6 +2867,14 @@ int main(int argc, char* argv[])
     tj_install_crash_report();
 #endif
     // Explicit renderer-only diagnostic: no ELF, title threads, VFS or saves.
+    if (argc == 4 && strcmp(argv[1], "--trophy-popup-preview") == 0) {
+        // Visual preview only: never initialize trophy HLE/SDK or write unlocks.
+        const char* language = getenv("LAJUNGLA_LANGUAGE");
+        tj_trophy_popup_configure(argv[2], language ? language : "es");
+        tj_trophy_popup_preview(0);
+        extern int tj_rsx_reference_main(const char*);
+        return tj_rsx_reference_main(argv[3]);
+    }
     if (argc == 3 && strcmp(argv[1], "--rsx-reference") == 0) {
         extern int tj_rsx_reference_main(const char*);
         return tj_rsx_reference_main(argv[2]);
