@@ -50,7 +50,8 @@ int main(int argc,char** argv) {
         directory=Path(directory)
         (directory/'test.c').write_text(source,encoding='utf-8')
         subprocess.run(['C:/Program Files/LLVM/bin/clang.exe','-D_CRT_SECURE_NO_WARNINGS',
-                        str(directory/'test.c'),'-luser32','-lgdi32','-lcomdlg32','-lshell32','-lole32','-o',str(directory/'test.exe')],check=True,timeout=180)
+                        str(directory/'test.c'),str(ROOT/'tools/launcher/trophy_view.c'),
+                        str(ROOT/'third_party/cjson/cJSON.c'),'-lcomctl32','-luuid','-luser32','-lgdi32','-lcomdlg32','-lshell32','-lole32','-o',str(directory/'test.exe')],check=True,timeout=180)
         wrapper=directory/"fake installer's.ps1"
         wrapper.write_text("param([string]$Root,[string[]]$Packages,[string]$Licenses)\n[IO.File]::WriteAllLines($Root+'\\received.txt',@($Root,$Licenses)+$Packages)\n")
         subprocess.run([str(directory/'test.exe'),str(directory/'launcher.ini'),str(wrapper)],check=True,timeout=60)
