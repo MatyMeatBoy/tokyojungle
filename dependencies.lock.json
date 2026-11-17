@@ -38,6 +38,10 @@
       {
         "path": "patches/ps3recomp/tj-trophy-popup.patch",
         "sha256": "e8359d70a4bfb946fe4d2e7e7d3272e27e4dd3aaf23c243268c9c9bf8e76b116"
+      },
+      {
+        "path": "patches/ps3recomp/tj-trophy-menu.patch",
+        "sha256": "c1c06ed783f9e9bf915b3b2845ee8bc68bac6af7021e4833ebc7089a16614d18"
       }
     ]
   },

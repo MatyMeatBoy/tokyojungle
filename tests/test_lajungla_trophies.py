@@ -169,6 +169,61 @@ int main(int argc,char** argv){
 '''
 
 
+@pytest.mark.parametrize('view_only,bad_state', [(False,False), (True,False), (True,True)])
+def test_host_snapshot_is_readonly_and_masks_secret_trophies(tmp_path, view_only, bad_state):
+    data = catalog()
+    data['trophies'][12]['hidden'] = True
+    binary = tmp_path/'catalog.bin'
+    binary.write_bytes(encode_catalog(data))
+    state = tmp_path/'state'
+    state.mkdir()
+    path = state/'NPWR01344_00.json'
+    payload = b'broken' if bad_state else json.dumps({'format': 1, 'communication_id': 'NPWR01344_00',
+        'trophies': [{'id': 0, 'timestamp': 1800000000}]}).encode()
+    path.write_bytes(payload)
+    source = HARNESS.split('int main(int argc,char** argv){')[0] + r'''
+int main(int argc,char** argv){
+ assert(argc==4);lajungla_trophy_view rows[13]{};
+ assert(lajungla_trophies_snapshot(rows,13)==0);
+ const bool view=argv[3][0]=='v',broken=argv[3][1]=='b';
+ assert((view?lajungla_trophies_configure_view(argv[1],argv[2]):lajungla_trophies_configure(argv[1],argv[2]))==1);
+ assert(lajungla_trophies_snapshot(rows,12)==-1);
+ assert(lajungla_trophies_snapshot(nullptr,13)==-1);
+ int result=lajungla_trophies_snapshot(rows,13);
+ if(broken){assert(result==-1);return 0;}
+ assert(result==13&&rows[0].unlocked==1&&rows[0].timestamp==1800000000&&rows[0].grade==2);
+ assert(rows[1].unlocked==0&&rows[1].timestamp==0&&rows[1].grade==3);
+ assert(rows[12].hidden&&!rows[12].unlocked&&!rows[12].name[0]&&!rows[12].description[0]&&!rows[12].icon[0]);
+ assert(!strcmp(rows[0].icon,"icons/TROP000.PNG"));
+ assert(!native_events&&!notifications&&!loads);
+ auto original=std::filesystem::path(argv[2])/"NPWR01344_00.json";
+ auto held=original;held+=".held";std::filesystem::rename(original,held);
+ assert(lajungla_trophies_snapshot(rows,13)==13&&rows[0].unlocked==1);
+ std::filesystem::rename(held,original);
+ if(view){assert(definitions==0);}else{lajungla_trophies_register();start();assert(loads==1&&definitions==13);}
+ assert(lajungla_trophies_snapshot(rows,13)==13&&!native_events&&!notifications);
+ lajungla_trophies_shutdown();return 0;
+}
+'''
+    (tmp_path/'rl_achievements.h').write_text('''#pragma once
+#include <stdint.h>
+extern "C" {void rl_ach_set_info(const char*,const char*);int rl_ach_init(const char*,void*,void*);
+void rl_ach_native_define(uint32_t,const char*,const char*,uint32_t);void rl_ach_native(uint32_t);
+int rl_ach_quiet_toasts();void rl_ach_frame();void rl_ach_save_loaded();void rl_ach_casual(const char*);void rl_ach_shutdown();}
+''')
+    cpp, exe = tmp_path/'view.cpp', tmp_path/'view.exe'
+    cpp.write_text(source)
+    compiler = shutil.which('clang++') or r'C:\Program Files\LLVM\bin\clang++.exe'
+    subprocess.run([compiler, '-std=c++20', '-O0', '-DLAJUNGLA_TROPHY_TEST_MEMORY_SIZE=1048576',
+                    '-DLAJUNGLA_RECOMP_ACHIEVEMENTS=1', '-I', str(ROOT/'src'), '-I', str(tmp_path),
+                    str(cpp), str(ROOT/'src/lajungla_trophies.cpp'), '-o', str(exe)],
+                   check=True, capture_output=True, text=True)
+    mode = ('v' if view_only else 'g') + ('b' if bad_state else 'o')
+    subprocess.run([str(exe), str(binary), str(state), mode], check=True)
+    assert path.read_bytes() == payload
+    assert list(state.iterdir()) == [path]
+
+
 @pytest.mark.parametrize('sdk,quiet', [(False,False), (True,False), (True,True)])
 def test_actual_cpp_hle_abi_persistence_and_optional_sdk(tmp_path, sdk, quiet):
     binary = tmp_path/'catalog.bin'

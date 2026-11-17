@@ -69,6 +69,10 @@ the locally extracted badge, translated message and trophy grade. Preview mode
 is isolated from game progress; the launcher's quiet-toast flag prevents duplicate
 native notifications.
 
+The [in-game trophy browser](TROPHY-MENU.md) opens with F3 or controller tab
+navigation. It shows colored grade cups for unlocked trophies and gray cups for
+locked ones, with separate original badges, progress and read-only details.
+
 ## Build and verification limits
 
 Cached ELF input is checked even when decryption or compilation is skipped.

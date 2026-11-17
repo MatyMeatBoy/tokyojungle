@@ -285,6 +285,7 @@ add_executable(tokyojungle
     src/main.cpp
     src/lajungla_trophies.cpp
     src/tj_trophy_popup.cpp
+    src/tj_trophy_menu.cpp
     src/tj_savedata_transaction.cpp
     src/tj_rsx_reference.cpp
     src/stubs.cpp

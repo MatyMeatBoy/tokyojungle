@@ -43,6 +43,8 @@ std::vector<Trophy> trophies;
 std::string title, description;
 fs::path state_directory;
 std::array<uint64_t,128> timestamps{};
+std::array<uint64_t,128> view_timestamps{};
+bool view_cached=false,view_valid=false;
 std::array<Context,4> contexts{};
 std::array<bool,4> handles{};
 bool initialized=false,configured=false,loaded=false;
@@ -94,11 +96,11 @@ uint32_t check(uint32_t context,uint32_t handle,bool registered=true) {
 
 // Own bounded JSON state grammar, containing no private names or keys. Reject
 // partial/malformed files instead of manufacturing unlocks from arbitrary text.
-bool load() {
-    if(loaded) return true;
+bool read_state(std::array<uint64_t,128>& next) {
+    next = {};
     const auto path=state_directory/(std::string(COMM)+".json");
     std::error_code ec;
-    if(!fs::exists(path,ec)) { if(ec) return false; loaded=true;return true; }
+    if(!fs::exists(path,ec)) { return !ec; }
     if(fs::is_symlink(path,ec) || ec || fs::file_size(path,ec)>32768 || ec) return false;
     std::ifstream in(path,std::ios::binary);
     std::string data((std::istreambuf_iterator<char>(in)),{});
@@ -107,7 +109,6 @@ bool load() {
     if(!std::regex_match(data,match,outer)) return false;
     std::string remaining=match[1].str();
     const std::regex item(R"rx(^\s*\{\s*"id"\s*:\s*([0-9]+)\s*,\s*"timestamp"\s*:\s*([0-9]+)\s*\}\s*)rx");
-    std::array<uint64_t,128> next{};
     bool first=true;
     while(remaining.find_first_not_of(" \r\n\t")!=std::string::npos) {
         if(!first) { if(remaining[0]!=',')return false; remaining.erase(0,1); }
@@ -119,6 +120,13 @@ bool load() {
         } catch(...) { return false; }
         remaining.erase(0,size_t(match.length()));first=false;
     }
+    return true;
+}
+
+bool load() {
+    if(loaded) return true;
+    std::array<uint64_t,128> next{};
+    if(!read_state(next)) return false;
     timestamps=next;loaded=true;return true;
 }
 
@@ -181,7 +189,7 @@ int32_t init(uint32_t,uint32_t,uint32_t,uint64_t options) {
     if(initialized) return int32_t(0x80022901);
     if(options) return int32_t(INVALID);
     if(!configured) return int32_t(NO_CONF);
-    contexts={};handles={};timestamps={};loaded=false;initialized=true;return 0;
+    contexts={};handles={};timestamps={};loaded=false;view_cached=false;initialized=true;return 0;
 }
 int32_t term() { std::lock_guard<std::mutex> guard(mutex);if(!initialized)return int32_t(NOT_INIT);initialized=false;contexts={};handles={};return 0; }
 int32_t create_context(uint32_t out,uint32_t comm,uint32_t sign,uint64_t options) {
@@ -263,7 +271,7 @@ int32_t progress(uint32_t context,uint32_t handle,uint32_t out) {
 }
 } // namespace
 
-extern "C" int lajungla_trophies_configure(const char* catalog,const char* directory) {
+static int configure_trophy_catalog(const char* catalog,const char* directory,bool bridge) {
     std::lock_guard<std::mutex> guard(mutex);if(initialized || !catalog || !directory)return 0;
     try {
         fs::path path=fs::u8path(catalog);if(fs::file_size(path)>1024*1024)return 0;
@@ -279,11 +287,11 @@ extern "C" int lajungla_trophies_configure(const char* catalog,const char* direc
             t.name=string(128);t.description=string(1024);t.icon=string(128);next.push_back(t);
         }
         if(pos!=bytes.size())return 0;
-        trophies=std::move(next);title=new_title;description=new_description;state_directory=fs::u8path(directory);configured=true;loaded=false;
+        trophies=std::move(next);title=new_title;description=new_description;state_directory=fs::u8path(directory);configured=true;loaded=false;view_cached=false;
     }catch(...) {return 0;}
 #ifdef LAJUNGLA_RECOMP_ACHIEVEMENTS
-    {
-        std::lock_guard<std::mutex> bridge(sdk_mutex);
+    if(bridge) {
+        std::lock_guard<std::mutex> bridge_guard(sdk_mutex);
         if(sdk_started)rl_ach_shutdown();
         rl_ach_set_info("tokyojungle","0.1.0");
         rl_ach_init("ps3",nullptr,nullptr);sdk_started=true;
@@ -293,6 +301,37 @@ extern "C" int lajungla_trophies_configure(const char* catalog,const char* direc
     }
 #endif
     return 1;
+}
+extern "C" int lajungla_trophies_configure(const char* catalog,const char* directory) {
+    return configure_trophy_catalog(catalog,directory,true);
+}
+extern "C" int lajungla_trophies_configure_view(const char* catalog,const char* directory) {
+    return configure_trophy_catalog(catalog,directory,false);
+}
+extern "C" int lajungla_trophies_snapshot(lajungla_trophy_view* records,uint32_t capacity) {
+    std::lock_guard<std::mutex> guard(mutex);
+    if(!configured)return 0;
+    if(!records||capacity<13)return -1;
+    try {
+        // Read into a private copy before guest registration. The browser must
+        // not consume the game's first-load SDK notification or alter timestamps.
+        auto values=timestamps;
+        if(!loaded) {
+            if(!view_cached) {view_valid=read_state(view_timestamps);view_cached=true;}
+            if(!view_valid)return -1;
+            values=view_timestamps;
+        }
+        for(const auto& trophy:trophies) {
+            auto& row=records[trophy.id];row={};
+            row.id=trophy.id;row.grade=trophy.grade;row.hidden=trophy.hidden;
+            row.timestamp=values[trophy.id];row.unlocked=row.timestamp!=0;
+            if(row.hidden&&!row.unlocked)continue;
+            std::memcpy(row.name,trophy.name.data(),trophy.name.size());
+            std::memcpy(row.description,trophy.description.data(),trophy.description.size());
+            std::snprintf(row.icon,sizeof(row.icon),"icons/TROP%03u.PNG",trophy.id);
+        }
+        return int(trophies.size());
+    }catch(...) {return -1;}
 }
 extern "C" void lajungla_trophies_register() {
 #define REG(nid,name,fn) ps3_hle_register(nid,name,reinterpret_cast<void*>(fn))

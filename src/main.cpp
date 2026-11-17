@@ -13,6 +13,7 @@
 #include <mutex>
 #include "lajungla_trophies.h"
 #include "tj_trophy_popup.h"
+#include "tj_trophy_menu.h"
 #include "lajungla_language.h"
 #include <string>
 
@@ -2833,6 +2834,19 @@ static void tj_redirect_std_stream_to_file(const wchar_t* env_name,
 }
 #endif
 
+extern "C" int cellPad_overlay_register_page(const char*,
+    int (*)(void*,unsigned,unsigned,unsigned),void (*)(int,long),void (*)(void));
+extern "C" void cellPad_overlay_page_key(int);
+static void tj_register_trophy_menu(const char* catalog,const char* language)
+{
+    tj_trophy_menu_configure(catalog,language);
+    const char* label=!strcmp(language,"en")?"Trophies":
+                      !strcmp(language,"fr")?"Trophées":
+                      !strcmp(language,"pt")?"Troféus":"Trofeos";
+    if(cellPad_overlay_register_page(label,tj_trophy_menu_render,
+                                    tj_trophy_menu_key,tj_trophy_menu_open)<0)
+        fprintf(stderr,"[TJ] In-game trophy page unavailable\n");
+}
 static void tj_configure_trophies()
 {
         const char* catalog = getenv("LAJUNGLA_TROPHY_CATALOG");
@@ -2851,6 +2865,7 @@ static void tj_configure_trophies()
                                         state ? state : fallback_state.c_str()))
             fprintf(stderr, "[TJ] Trophy catalog/state unavailable; run content setup or inspect trophy state.\n");
         lajungla_trophies_register();
+        tj_register_trophy_menu(catalog ? catalog : fallback.c_str(),folder);
         if (getenv("YDKJ_INJECT_PAD") || getenv("LAJUNGLA_CAPTURE_SPU") ||
             getenv("PS3_PAD_ONESHOT_MS") || getenv("TJ_TITLE_SAVE_PROBE"))
             lajungla_trophies_casual("diagnostic run");
@@ -2867,6 +2882,16 @@ int main(int argc, char* argv[])
     tj_install_crash_report();
 #endif
     // Explicit renderer-only diagnostic: no ELF, title threads, VFS or saves.
+    if (argc == 4 && strcmp(argv[1], "--trophy-menu-preview") == 0) {
+        const char* language=getenv("LAJUNGLA_LANGUAGE");
+        const char* state=getenv("LAJUNGLA_TROPHY_DIR");
+        if(!lajungla_trophies_configure_view(argv[2],state?state:"savedata/trophies"))
+            return EXIT_FAILURE;
+        tj_register_trophy_menu(argv[2],language?language:"es");
+        cellPad_overlay_page_key(2);
+        extern int tj_rsx_reference_main(const char*);
+        return tj_rsx_reference_main(argv[3]);
+    }
     if (argc == 4 && strcmp(argv[1], "--trophy-popup-preview") == 0) {
         // Visual preview only: never initialize trophy HLE/SDK or write unlocks.
         const char* language = getenv("LAJUNGLA_LANGUAGE");
