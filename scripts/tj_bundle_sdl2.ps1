@@ -7,7 +7,12 @@ $script:TjSdlLicense = Join-Path (Split-Path $PSScriptRoot) 'licenses\SDL2.txt'
 function Assert-TjSdlArchive {
     param([Parameter(Mandatory=$true)][string]$Archive,
           [string]$ExpectedSha256 = $script:TjSdlArchiveSha256)
-    if ((Get-FileHash -LiteralPath $Archive -Algorithm SHA256 -ErrorAction Stop).Hash -ne $ExpectedSha256) {
+    # .NET avoids PowerShell module-discovery differences between PS5 and PS7.
+    $stream = [IO.File]::OpenRead($Archive)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $actual = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+    finally { $sha.Dispose(); $stream.Dispose() }
+    if ($actual -ne $ExpectedSha256) {
         throw 'SDL2 archive SHA256 mismatch; refusing to install it.'
     }
 }

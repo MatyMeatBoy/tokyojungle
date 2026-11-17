@@ -27,12 +27,14 @@
 #define UNICODE
 #define _UNICODE
 #include <windows.h>
+#include <commdlg.h>
+#include <shlobj.h>
 #include <stdlib.h>
 #include <wchar.h>
 
 #define MAXP 1024
 
-enum { ID_RES_720 = 101, ID_RES_2K, ID_WINDOWED, ID_FULLSCREEN, ID_SKIP, ID_PLAY, ID_QUIT, ID_PROMPTS };
+enum { ID_RES_720 = 101, ID_RES_2K, ID_WINDOWED, ID_FULLSCREEN, ID_SKIP, ID_PLAY, ID_QUIT, ID_PROMPTS, ID_INSTALL, ID_INSTALL_STATUS };
 
 typedef struct {
     int two_k;       /* 0: 1280x720, 1: 2560x1440 */
@@ -46,6 +48,8 @@ static wchar_t g_ini[MAXP];
 static Settings g_settings;
 static int g_play;
 static HFONT g_font;
+static HANDLE g_install_process;
+static wchar_t g_install_log[MAXP];
 
 static int exists(const wchar_t* p) {
     return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES;
@@ -72,7 +76,7 @@ static int fail(const wchar_t* msg, const wchar_t* path) {
 }
 
 static const wchar_t* prompt_values[] = { L"playstation", L"xbox", L"nintendo", L"keyboard", L"auto" };
-static const wchar_t* prompt_labels[] = { L"PlayStation (original)", L"Xbox", L"Nintendo / Switch", L"Teclado", L"AutomÃ¡tico (Ãºltimo dispositivo)" };
+static const wchar_t* prompt_labels[] = { L"PlayStation (original)", L"Xbox", L"Nintendo / Switch", L"Teclado", L"Automático (último dispositivo)" };
 
 static int prompt_setting_index(const wchar_t* value) {
     for (int i = 0; i < 5; ++i) if (_wcsicmp(value, prompt_values[i]) == 0) return i;
@@ -100,6 +104,108 @@ static void save_settings(void) {
     WritePrivateProfileStringW(L"launcher", L"dont_ask", g_settings.skip ? L"1" : L"0", g_ini);
 }
 
+
+/* Append a PowerShell literal without allowing package paths to become code.
+ * Windows paths cannot contain double quotes; apostrophes are doubled here. */
+static int command_append(wchar_t* out, size_t cap, const wchar_t* text) {
+    size_t have = wcslen(out), extra = wcslen(text);
+    if (extra >= cap || have >= cap - extra) return 0;
+    memcpy(out + have, text, (extra + 1) * sizeof(wchar_t));
+    return 1;
+}
+
+static int command_ps_literal(wchar_t* out, size_t cap, const wchar_t* text) {
+    if (!command_append(out, cap, L"'")) return 0;
+    for (; *text; ++text) {
+        wchar_t one[2] = { *text, 0 };
+        if (*text == L'"' || *text == L'\r' || *text == L'\n') return 0;
+        if (!command_append(out, cap, *text == L'\'' ? L"''" : one)) return 0;
+    }
+    return command_append(out, cap, L"'");
+}
+
+static int content_install_command(wchar_t* out, size_t cap, const wchar_t* wrapper,
+                                   const wchar_t* root, const wchar_t* packages,
+                                   const wchar_t* licenses) {
+    out[0] = 0;
+    if (!command_append(out, cap, L"powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& ") ||
+        !command_ps_literal(out, cap, wrapper) || !command_append(out, cap, L" -Root ") ||
+        !command_ps_literal(out, cap, root) || !command_append(out, cap, L" -Packages @(")) return 0;
+    const wchar_t* item = packages + wcslen(packages) + 1;
+    if (!*item) {
+        if (!command_ps_literal(out, cap, packages)) return 0;
+    } else {
+        int first = 1;
+        for (; *item; item += wcslen(item) + 1) {
+            wchar_t path[MAXP];
+            if (wcslen(packages) + wcslen(item) + 2 >= MAXP) return 0;
+            join(path, packages, item);
+            if ((!first && !command_append(out, cap, L",")) || !command_ps_literal(out, cap, path)) return 0;
+            first = 0;
+        }
+    }
+    return command_append(out, cap, L") -Licenses ") && command_ps_literal(out, cap, licenses) &&
+           command_append(out, cap, L"; if (-not $?) { exit 1 }\"");
+}
+
+static void start_content_install(HWND hwnd) {
+    if (g_install_process) return;
+    wchar_t wrapper[MAXP];
+    const wchar_t* wrapper_paths[] = { L"tools\\content\\tj_prepare_content.ps1",
+        L".build\\tokyojungle\\scripts\\tj_prepare_content.ps1", L"scripts\\tj_prepare_content.ps1" };
+    for (int i = 0; i < 3; ++i) {
+        join(wrapper, g_base, wrapper_paths[i]);
+        if (exists(wrapper)) break;
+    }
+    if (!exists(wrapper)) { fail(L"O instalador de conteúdo não foi encontrado.", wrapper); return; }
+    wchar_t packages[8192] = {0};
+    OPENFILENAMEW open = { sizeof open };
+    open.hwndOwner = hwnd;
+    open.lpstrTitle = L"Instalar jogo / DLC: selecione seus arquivos PKG";
+    open.lpstrFilter = L"Pacotes PlayStation 3 (*.pkg)\0*.pkg\0Todos os arquivos\0*.*\0\0";
+    open.lpstrFile = packages;
+    open.nMaxFile = sizeof packages / sizeof packages[0];
+    open.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_ALLOWMULTISELECT | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&open)) return;
+    HRESULT co = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    BROWSEINFOW browse = {0};
+    browse.hwndOwner = hwnd;
+    browse.lpszTitle = L"Selecione a pasta com as licenças RAP da sua cópia";
+    browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    PIDLIST_ABSOLUTE selected = SHBrowseForFolderW(&browse);
+    wchar_t licenses[MAXP] = {0};
+    int valid = selected && SHGetPathFromIDListW(selected, licenses);
+    if (selected) CoTaskMemFree((void*)selected);
+    if (SUCCEEDED(co)) CoUninitialize();
+    if (!valid) return;
+    wchar_t command[32768];
+    if (!content_install_command(command, sizeof command / sizeof command[0], wrapper, g_base, packages, licenses)) {
+        fail(L"Os caminhos selecionados são longos demais para iniciar a instalação.", NULL); return;
+    }
+    join(g_install_log, g_base, L"content-setup.log");
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    HANDLE log = CreateFileW(g_install_log, GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS, 0, NULL);
+    HANDLE input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+    if (log == INVALID_HANDLE_VALUE || input == INVALID_HANDLE_VALUE) {
+        if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
+        if (input != INVALID_HANDLE_VALUE) CloseHandle(input);
+        fail(L"Não foi possível abrir o log da instalação.", g_install_log); return;
+    }
+    STARTUPINFOW si = { sizeof si };
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = si.hStdError = log; si.hStdInput = input;
+    PROCESS_INFORMATION process = {0};
+    BOOL started = CreateProcessW(NULL, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, g_base, &si, &process);
+    CloseHandle(log); CloseHandle(input);
+    if (!started) { fail(L"Não foi possível iniciar a instalação.", g_install_log); return; }
+    CloseHandle(process.hThread);
+    g_install_process = process.hProcess;
+    EnableWindow(GetDlgItem(hwnd, ID_PLAY), FALSE);
+    EnableWindow(GetDlgItem(hwnd, ID_INSTALL), FALSE);
+    SetDlgItemTextW(hwnd, ID_INSTALL_STATUS, L"Instalando... veja content-setup.log");
+    SetTimer(hwnd, 1, 250, NULL);
+}
+
 /* ---- settings window ---------------------------------------------------- */
 
 static HWND add(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style,
@@ -113,21 +219,21 @@ static HWND add(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD styl
 static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
-        add(hwnd, L"BUTTON", L"ResoluÃƒÂ§ÃƒÂ£o", BS_GROUPBOX, 12, 8, 316, 78, 0);
+        add(hwnd, L"BUTTON", L"Resolução", BS_GROUPBOX, 12, 8, 316, 78, 0);
         add(hwnd, L"BUTTON", L"1280 x 720  (original do PS3, mais leve)",
             BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 24, 30, 296, 22, ID_RES_720);
-        add(hwnd, L"BUTTON", L"2560 x 1440  (2K, mais nÃƒÂ­tido)",
+        add(hwnd, L"BUTTON", L"2560 x 1440  (2K, mais nítido)",
             BS_AUTORADIOBUTTON, 24, 56, 296, 22, ID_RES_2K);
         add(hwnd, L"BUTTON", L"Tela", BS_GROUPBOX, 12, 94, 316, 78, 0);
         add(hwnd, L"BUTTON", L"Janela",
             BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 24, 116, 296, 22, ID_WINDOWED);
         add(hwnd, L"BUTTON", L"Tela cheia",
             BS_AUTORADIOBUTTON, 24, 142, 296, 22, ID_FULLSCREEN);
-        add(hwnd, L"BUTTON", L"NÃƒÂ£o perguntar de novo (segure Shift ao abrir para mudar)",
-            BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP, 14, 242, 316, 22, ID_SKIP);
+        add(hwnd, L"BUTTON", L"Não perguntar de novo (segure Shift ao abrir para mudar)",
+            BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP, 14, 298, 316, 22, ID_SKIP);
         add(hwnd, L"BUTTON", L"Jogar", BS_DEFPUSHBUTTON | WS_GROUP | WS_TABSTOP,
-            146, 276, 88, 30, ID_PLAY);
-        add(hwnd, L"BUTTON", L"Sair", BS_PUSHBUTTON | WS_TABSTOP, 240, 276, 88, 30, ID_QUIT);
+            146, 332, 88, 30, ID_PLAY);
+        add(hwnd, L"BUTTON", L"Sair", BS_PUSHBUTTON | WS_TABSTOP, 240, 332, 88, 30, ID_QUIT);
         CheckRadioButton(hwnd, ID_RES_720, ID_RES_2K, g_settings.two_k ? ID_RES_2K : ID_RES_720);
         CheckRadioButton(hwnd, ID_WINDOWED, ID_FULLSCREEN,
                          g_settings.fullscreen ? ID_FULLSCREEN : ID_WINDOWED);
@@ -135,8 +241,22 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SetFocus(GetDlgItem(hwnd, ID_PLAY));
         return 0;
     }
+    case WM_TIMER:
+        if (wp == 1 && g_install_process && WaitForSingleObject(g_install_process, 0) == WAIT_OBJECT_0) {
+            DWORD code = 1;
+            GetExitCodeProcess(g_install_process, &code);
+            CloseHandle(g_install_process); g_install_process = NULL;
+            KillTimer(hwnd, 1);
+            EnableWindow(GetDlgItem(hwnd, ID_PLAY), TRUE);
+            EnableWindow(GetDlgItem(hwnd, ID_INSTALL), TRUE);
+            SetDlgItemTextW(hwnd, ID_INSTALL_STATUS, code ? L"Falhou: veja content-setup.log" : L"Conteúdo instalado com sucesso.");
+            if (code) fail(L"A instalação falhou. Consulte o log para os detalhes.", g_install_log);
+        }
+        return 0;
     case WM_COMMAND:
+        if (LOWORD(wp) == ID_INSTALL) { start_content_install(hwnd); return 0; }
         if (LOWORD(wp) == ID_PLAY || LOWORD(wp) == IDOK) {
+            if (g_install_process) return 0;
             g_settings.two_k = IsDlgButtonChecked(hwnd, ID_RES_2K) == BST_CHECKED;
             g_settings.fullscreen = IsDlgButtonChecked(hwnd, ID_FULLSCREEN) == BST_CHECKED;
             const LRESULT selected = SendDlgItemMessageW(hwnd, ID_PROMPTS, CB_GETCURSEL, 0, 0);
@@ -152,6 +272,7 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        if (g_install_process) { CloseHandle(g_install_process); g_install_process = NULL; }
         PostQuitMessage(0);
         return 0;
     }
@@ -174,7 +295,7 @@ static int show_settings(HINSTANCE inst) {
     RegisterClassW(&wc);
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r = {0, 0, 340, 320};
+    RECT r = {0, 0, 340, 376};
     AdjustWindowRect(&r, style, FALSE);
     const int w = r.right - r.left, h = r.bottom - r.top;
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"Tokyo Jungle", style,
@@ -295,7 +416,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
         }
     }
     if (!found)
-        return fail(L"NÃƒÂ£o encontrei o jogo (tokyojungle.exe) em engine\\ ou build\\tokyojungle\\ ao lado deste launcher.", g_base);
+        return fail(L"Não encontrei o jogo (tokyojungle.exe) em engine\\ ou build\\tokyojungle\\ ao lado deste launcher.", g_base);
 
     join(tmp, engine, L"input\\EBOOT.ELF");
     if (!exists(tmp)) return fail(L"Falta o EBOOT.ELF descriptografado:", tmp);
@@ -315,7 +436,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     if (is_absolute(game_dir)) wcscpy(game, game_dir);
     else join(game, g_base, game_dir);
     join(tmp, game, L"USRDIR");
-    if (!exists(tmp)) return fail(L"Falta a pasta do jogo extraÃƒÂ­do (NPUA80523 com USRDIR dentro):", game);
+    if (!exists(tmp)) return fail(L"Falta a pasta do jogo extraído (NPUA80523 com USRDIR dentro):", game);
 
     wchar_t saves[MAXP], cache[MAXP], controls[MAXP], logs[MAXP], out_log[MAXP], err_log[MAXP];
     join(saves, engine, L"savedata");
@@ -377,7 +498,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     STARTUPINFOW si = { sizeof si };
     PROCESS_INFORMATION pi;
     if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, engine, &si, &pi))
-        return fail(L"NÃƒÂ£o consegui iniciar o jogo:", exe);
+        return fail(L"Não consegui iniciar o jogo:", exe);
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 0;
     GetExitCodeProcess(pi.hProcess, &code);

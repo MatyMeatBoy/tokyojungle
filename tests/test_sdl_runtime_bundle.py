@@ -21,7 +21,7 @@ def test_sdl_bundle_checks_hash_and_copies_license():
             zipped.writestr('README-SDL.txt',b'fixture redistribution notice')
         digest=hashlib.sha256(archive.read_bytes()).hexdigest()
         script=ROOT/'scripts/tj_bundle_sdl2.ps1'
-        common=f'. {ps_quote(script)}; '
+        common=f"$ErrorActionPreference='Stop'; . {ps_quote(script)}; "
         command=common+f'Copy-TjSdlRuntime -Archive {ps_quote(archive)} -CacheDirectory {ps_quote(directory/"cache")} -Destination {ps_quote(directory/"engine")} -ExpectedSha256 {ps_quote(digest)}'
         subprocess.run(['powershell.exe','-NoProfile','-Command',command],check=True)
         assert (directory/'engine/SDL2.dll').read_bytes()==b'fixture DLL'
